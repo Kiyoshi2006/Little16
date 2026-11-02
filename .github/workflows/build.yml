@@ -37,6 +37,13 @@ jobs:
         run: |
           git clone --recursive --depth=1 https://github.com/theos/theos.git "$THEOS"
 
+      - name: Install iOS toolchain (clang)
+        run: |
+          mkdir -p "$THEOS/toolchain"
+          curl -fsSL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz \
+            | tar -xJf - -C "$THEOS/toolchain/"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+
       - name: Install iOS 16.5 SDK
         run: |
           git clone --depth=1 --filter=blob:none --sparse https://github.com/theos/sdks.git sdks-tmp
