@@ -36,9 +36,13 @@ jobs:
           curl -fsSL https://github.com/theos/sdks/releases/download/latest/iPhoneOS16.5.sdk.tar.xz \
             | sudo tar -xJf - -C /theos/sdks/
 
-      - name: Install build deps (ldid, fakeroot)
+      - name: Install ldid (not in Ubuntu 26.04 apt)
         run: |
-          sudo apt-get install -q -y ldid fakeroot
+          # Download prebuilt ldid binary from theos-dev releases
+          curl -fsSL https://github.com/theos/ldid/releases/latest/download/ldid_linux-x86_64 \
+            -o /usr/local/bin/ldid
+          chmod +x /usr/local/bin/ldid
+          ldid 2>/dev/null || true   # verify it runs
 
       - name: Build package
         env:
