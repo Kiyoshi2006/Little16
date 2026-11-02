@@ -3,53 +3,51 @@ name: Build .deb
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      THEOS: ${{ github.workspace }}/theos
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos
-        uses: actions/cache@v4
-        id: theos-cache
-        with:
-          path: /theos
-          key: theos-${{ runner.os }}-${{ hashFiles('control') }}
-          restore-keys: theos-${{ runner.os }}-
-
-      - name: Install Theos
-        if: steps.theos-cache.outputs.cache-hit != 'true'
+      - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -q -y curl git make fakeroot dpkg ldid xz-utils
+          sudo apt-get install -q -y fakeroot dpkg make git curl xz-utils
 
-          # Clone Theos
-          git clone --recursive https://github.com/theos/theos.git /theos
-
-          # Download iOS 16 SDK
-          curl -fsSL https://github.com/theos/sdks/releases/download/latest/iPhoneOS16.5.sdk.tar.xz \
-            | sudo tar -xJf - -C /theos/sdks/
-
-      - name: Install ldid (not in Ubuntu 26.04 apt)
+      - name: Install ldid
         run: |
-          # Download prebuilt ldid binary from theos-dev releases
-          curl -fsSL https://github.com/theos/ldid/releases/latest/download/ldid_linux-x86_64 \
+          sudo curl -fsSL \
+            https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64 \
             -o /usr/local/bin/ldid
-          chmod +x /usr/local/bin/ldid
-          ldid 2>/dev/null || true   # verify it runs
+          sudo chmod +x /usr/local/bin/ldid
 
-      - name: Build package
+      - name: Install Theos
+        run: |
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$THEOS"
+
+      - name: Install iOS 16.5 SDK
+        run: |
+          git clone --depth=1 --filter=blob:none --sparse https://github.com/theos/sdks.git sdks-tmp
+          git -C sdks-tmp sparse-checkout set iPhoneOS16.5.sdk
+          mkdir -p "$THEOS/sdks"
+          mv sdks-tmp/iPhoneOS16.5.sdk "$THEOS/sdks/"
+
+      - name: Build package (rootless)
         env:
-          THEOS: /theos
           THEOS_PACKAGE_SCHEME: rootless
         run: |
-          make clean
           make package FINALPACKAGE=1
 
       - name: Upload .deb artifact
