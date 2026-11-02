@@ -8,4 +8,3 @@ Section: Tweaks
 Architecture: iphoneos-arm64
 Version: 1.0.0
 Installed-Size: 200
-Sileodepiction: https://raw.githubusercontent.com/Kiyoshi2006/Little16/main/depiction.json
