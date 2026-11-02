@@ -1,0 +1,63 @@
+name: Build .deb
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        uses: actions/cache@v4
+        id: theos-cache
+        with:
+          path: /theos
+          key: theos-${{ runner.os }}-${{ hashFiles('control') }}
+          restore-keys: theos-${{ runner.os }}-
+
+      - name: Install Theos
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -q -y curl git make fakeroot dpkg ldid xz-utils
+
+          # Clone Theos
+          git clone --recursive https://github.com/theos/theos.git /theos
+
+          # Download iOS 16 SDK
+          curl -fsSL https://github.com/theos/sdks/releases/download/latest/iPhoneOS16.5.sdk.tar.xz \
+            | sudo tar -xJf - -C /theos/sdks/
+
+      - name: Install build deps (ldid, fakeroot)
+        run: |
+          sudo apt-get install -q -y ldid fakeroot
+
+      - name: Build package
+        env:
+          THEOS: /theos
+          THEOS_PACKAGE_SCHEME: rootless
+        run: |
+          make clean
+          make package FINALPACKAGE=1
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Little16-deb
+          path: packages/*.deb
+          retention-days: 30
+
+      - name: Release on tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/*.deb
+          generate_release_notes: true
