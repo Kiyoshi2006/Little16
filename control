@@ -1,0 +1,11 @@
+Package: com.michaelmelita1.little16
+Name: Little16
+Author: michaelmelita1
+Maintainer: Kiyoshi2006
+Description: iPhone X gestures for iOS 16 — home indicator, swipe-to-home, floating dock. Fixed landscape animation bug on iPhone 8/8 Plus.
+Depends: mobilesubstrate
+Section: Tweaks
+Architecture: iphoneos-arm64
+Version: 1.0.0
+Installed-Size: 200
+Sileodepiction: https://raw.githubusercontent.com/Kiyoshi2006/Little16/main/depiction.json
