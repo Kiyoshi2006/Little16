@@ -192,8 +192,49 @@ layoutStateTransitionCoordinator:(id)c
 }
 %end
 
+
+// ─── Diagnostics: dump method lists of dock/switcher classes to a file ───────
+// Output: /var/mobile/Library/Little16-dump.txt (written once, ~20s after respring)
+
+static void L16Dump(void) {
+    NSArray *keys = @[@"FloatingDock", @"HomeGesture", @"HomeGrabber", @"FluidSwitcher",
+                      @"ZoomAnim", @"AppToHome", @"HomeScreenOpenFolder", @"DockIconListView",
+                      @"SBMainSwitcher", @"SBSwitcherAppSuggestion", @"SBDeviceApplicationSceneView"];
+    NSMutableString *out = [NSMutableString string];
+    unsigned int n = 0;
+    Class *list = objc_copyClassList(&n);
+    for (unsigned int i = 0; i < n; i++) {
+        const char *cn = class_getName(list[i]);
+        if (!cn || strncmp(cn, "SB", 2) != 0) continue;
+        NSString *name = [NSString stringWithUTF8String:cn];
+        BOOL match = NO;
+        for (NSString *k in keys) if ([name containsString:k]) { match = YES; break; }
+        if (!match) continue;
+        Class sup = class_getSuperclass(list[i]);
+        [out appendFormat:@"\n@@ %@ : %s\n", name, sup ? class_getName(sup) : "-"];
+        unsigned int c = 0;
+        Ivar *iv = class_copyIvarList(list[i], &c);
+        for (unsigned int j = 0; j < c; j++)
+            [out appendFormat:@"  ivar %s %s\n", ivar_getName(iv[j]), ivar_getTypeEncoding(iv[j]) ?: ""];
+        free(iv);
+        for (int meta = 0; meta < 2; meta++) {
+            Class k = meta ? object_getClass(list[i]) : list[i];
+            Method *m = class_copyMethodList(k, &c);
+            for (unsigned int j = 0; j < c; j++)
+                [out appendFormat:@"  %s%s  %s\n", meta ? "+" : "-",
+                    sel_getName(method_getName(m[j])), method_getTypeEncoding(m[j]) ?: ""];
+            free(m);
+        }
+    }
+    free(list);
+    [out writeToFile:@"/var/mobile/Library/Little16-dump.txt" atomically:YES
+            encoding:NSUTF8StringEncoding error:nil];
+}
+
 %ctor {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (![bid isEqualToString:@"com.apple.springboard"]) return;
     %init;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC),
+        dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{ L16Dump(); });
 }
