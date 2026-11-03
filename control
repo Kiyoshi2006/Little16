@@ -7,4 +7,3 @@ Depends: mobilesubstrate
 Section: Tweaks
 Architecture: iphoneos-arm64
 Version: 1.0.0
-Installed-Size: 200
