@@ -202,25 +202,53 @@ layoutStateTransitionCoordinator:(id)c
 
 
 
-// ─── EXPERIMENTAL FIXES (v1.0.2) ─────────────────────────────────────────────
-// Bug A: dock flashes ~0.3s when re-entering an app (esp. landscape).
-//   Hypothesis: dock window is still presented while home -> app transition runs.
-//   Fix: hide the dock window while transitioning to an app (toDockVisible == NO),
-//   show it again shortly after the transition ends or as soon as the user pulls
-//   the dock up.
-// Bug B: swiping home from landscape: card shrinks to a wrong place, then ~1s later
-//   jumps to the dock. Hypothesis: the zoom animation resolves the app's icon inside
-//   the (rotated / not presented) floating dock. Fix: in landscape, while the dock is
-//   not presented, pretend the dock displays no icons so the home-screen icon is used.
+// ─── TRACE + experiment switches (v1.0.3) ────────────────────────────────────
+// Trace file : /var/mobile/Library/Little16-trace.txt  (reset on every respring)
+// Switch file: /var/mobile/Library/Little16-flags.txt   (plain text, words below;
+//              re-read every ~1s, no respring needed)
+//   nodelay  -> zero the zoom delays of SBCenterAppIconZoomAnimator
+//   hidedock -> hide dock window while transitioning home -> app
 
-static BOOL L16Landscape(void) {
+@interface SBHomeGestureFinalDestinationSwitcherModifier : NSObject
+- (long long)currentFinalDestination;
+- (id)finalDestinationReason;
+@end
+
+static long long L16Orient(void) {
     UIApplication *app = [UIApplication sharedApplication];
-    long long o = 0;
     if ([app respondsToSelector:@selector(activeInterfaceOrientation)])
-        o = ((long long (*)(id, SEL))objc_msgSend)(app, @selector(activeInterfaceOrientation));
-    else
-        o = (long long)[app statusBarOrientation];
-    return o == 3 || o == 4;
+        return ((long long (*)(id, SEL))objc_msgSend)(app, @selector(activeInterfaceOrientation));
+    return (long long)[app statusBarOrientation];
+}
+
+static BOOL L16Flag(NSString *name) {
+    static NSString *cache = nil;
+    static CFAbsoluteTime last = 0;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (!cache || now - last > 1.0) {
+        cache = [NSString stringWithContentsOfFile:@"/var/mobile/Library/Little16-flags.txt"
+                                          encoding:NSUTF8StringEncoding error:nil] ?: @"";
+        last = now;
+    }
+    return [cache containsString:name];
+}
+
+static void L16Log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
+static void L16Log(NSString *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    NSString *m = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    NSString *line = [NSString stringWithFormat:@"%.3f o=%lld %@\n", CACurrentMediaTime(), L16Orient(), m];
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        q = dispatch_queue_create("little16.trace", DISPATCH_QUEUE_SERIAL);
+        [@"" writeToFile:@"/var/mobile/Library/Little16-trace.txt" atomically:YES
+                encoding:NSUTF8StringEncoding error:nil];
+    });
+    dispatch_async(q, ^{
+        FILE *f = fopen("/var/mobile/Library/Little16-trace.txt", "a");
+        if (f) { fputs([line UTF8String], f); fclose(f); }
+    });
 }
 
 static NSUInteger gL16Gen = 0;
@@ -230,58 +258,97 @@ static NSUInteger gL16Gen = 0;
                               fromDockVisible:(BOOL)from
                                 toDockVisible:(BOOL)to {
     %orig;
+    L16Log(@"DOCK prepareTransition mode=%lld from=%d to=%d", mode, from, to);
     gL16Gen++;
-    UIWindow *w = [[self view] window];
-    if (w) w.alpha = to ? 1.0 : 0.0;
+    if (L16Flag(@"hidedock")) {
+        UIWindow *w = [[self view] window];
+        if (w) w.alpha = to ? 1.0 : 0.0;
+    }
 }
 - (void)cleanupAfterTransitionToEnvironmentMode:(long long)mode {
     %orig;
-    NSUInteger g = gL16Gen;
-    __weak UIWindow *w = [[self view] window];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (g == gL16Gen && w) w.alpha = 1.0;
-    });
+    L16Log(@"DOCK cleanupTransition mode=%lld", mode);
+    if (L16Flag(@"hidedock")) {
+        NSUInteger g = gL16Gen;
+        __weak UIWindow *w = [[self view] window];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (g == gL16Gen && w) w.alpha = 1.0;
+        });
+    }
 }
 - (void)_setPresentedProgress:(double)progress animated:(BOOL)animated
                   interactive:(BOOL)interactive completion:(id)completion {
-    if (progress > 0.01) {
+    L16Log(@"DOCK setPresentedProgress %.2f anim=%d inter=%d", progress, animated, interactive);
+    if (progress > 0.01 && L16Flag(@"hidedock")) {
         gL16Gen++;
         UIWindow *w = [[self view] window];
         if (w) w.alpha = 1.0;
     }
     %orig;
 }
+- (void)_beginPresentationTransition { L16Log(@"DOCK beginPresentationTransition"); %orig; }
+- (void)_endPresentationTransition   { L16Log(@"DOCK endPresentationTransition");   %orig; }
 %end
 
 %hook SBFloatingDockController
-- (BOOL)isDisplayingIcon:(id)icon {
-    if (L16Landscape() && ![self isFloatingDockPresented]) return NO;
+- (void)layoutStateTransitionCoordinator:(id)c transitionDidBeginWithTransitionContext:(id)ctx {
+    NSString *d = [ctx description];
+    L16Log(@"LAYOUT transitionDidBegin %@", d.length > 400 ? [d substringToIndex:400] : d);
+    %orig;
+}
+- (void)layoutStateTransitionCoordinator:(id)c transitionDidEndWithTransitionContext:(id)ctx {
+    L16Log(@"LAYOUT transitionDidEnd");
+    %orig;
+}
+- (void)_presentFloatingDockIfDismissedAnimated:(BOOL)a completionHandler:(id)h {
+    L16Log(@"DOCK present animated=%d", a); %orig;
+}
+- (void)_dismissFloatingDockIfPresentedAnimated:(BOOL)a completionHandler:(id)h {
+    L16Log(@"DOCK dismiss animated=%d", a); %orig;
+}
+%end
+
+%hook SBHomeGestureFinalDestinationSwitcherModifier
+- (void)_updateForGestureDidEndWithEvent:(id)e {
+    %orig;
+    L16Log(@"GESTURE end finalDestination=%lld reason=%@", [self currentFinalDestination], [self finalDestinationReason]);
+}
+%end
+
+%hook SBHomeGestureToHomeSwitcherModifier
+- (id)initWithTransitionID:(id)tid showingOrAnimatingCardsForFlyIn:(BOOL)fly {
+    L16Log(@"GESTURE ToHomeModifier init flyIn=%d", fly);
     return %orig;
 }
-- (BOOL)isDisplayingIcon:(id)icon inLocation:(id)loc {
-    if (L16Landscape() && ![self isFloatingDockPresented]) return NO;
-    return %orig;
+%end
+
+%hook SBCenterAppIconZoomAnimator
+- (double)_iconZoomDelay {
+    double d = %orig; L16Log(@"ZOOM iconZoomDelay=%.3f", d);
+    return L16Flag(@"nodelay") ? 0.0 : d;
 }
-- (BOOL)isDisplayingIcon:(id)icon inLocations:(id)locs {
-    if (L16Landscape() && ![self isFloatingDockPresented]) return NO;
-    return %orig;
+- (double)_appZoomDelay {
+    double d = %orig; L16Log(@"ZOOM appZoomDelay=%.3f", d);
+    return L16Flag(@"nodelay") ? 0.0 : d;
 }
-- (id)firstIconViewForIcon:(id)icon {
-    if (L16Landscape() && ![self isFloatingDockPresented]) return nil;
-    return %orig;
+- (void)_delayedForRotation { L16Log(@"ZOOM delayedForRotation"); %orig; }
+- (void)_prepareAnimation   { L16Log(@"ZOOM center prepare"); %orig; }
+- (void)_cleanupAnimation   { L16Log(@"ZOOM center cleanup"); %orig; }
+- (void)_performAnimationToFraction:(double)f withCentralAnimationSettings:(id)s
+                              delay:(double)d alreadyAnimating:(BOOL)a sharedCompletion:(id)c {
+    L16Log(@"ZOOM center perform fraction=%.2f delay=%.3f already=%d", f, d, a);
+    %orig;
 }
-- (id)firstIconViewForIcon:(id)icon excludingLocations:(id)locs {
-    if (L16Landscape() && ![self isFloatingDockPresented]) return nil;
-    return %orig;
-}
-- (id)firstIconViewForIcon:(id)icon inLocations:(id)locs {
-    if (L16Landscape() && ![self isFloatingDockPresented]) return nil;
-    return %orig;
-}
-- (id)iconViewForIcon:(id)icon location:(id)loc {
-    if (L16Landscape() && ![self isFloatingDockPresented]) return nil;
-    return %orig;
+%end
+
+%hook SBScaleIconZoomAnimator
+- (void)_prepareAnimation { L16Log(@"ZOOM scale prepare"); %orig; }
+- (void)_cleanupAnimation { L16Log(@"ZOOM scale cleanup"); %orig; }
+- (void)_performAnimationToFraction:(double)f withCentralAnimationSettings:(id)s
+                              delay:(double)d alreadyAnimating:(BOOL)a sharedCompletion:(id)c {
+    L16Log(@"ZOOM scale perform fraction=%.2f delay=%.3f already=%d", f, d, a);
+    %orig;
 }
 %end
 
