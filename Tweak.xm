@@ -207,7 +207,7 @@ layoutStateTransitionCoordinator:(id)c
 // Switch file: /var/mobile/Library/Little16-flags.txt   (plain text, words below;
 //              re-read every ~1s, no respring needed)
 //   nodelay  -> zero the zoom delays of SBCenterAppIconZoomAnimator
-//   hidedock -> hide dock window while transitioning home -> app
+//   nohidedock -> turn OFF the dock flash fix (hide dock window while entering an app)
 
 @interface SBHomeGestureFinalDestinationSwitcherModifier : NSObject
 - (long long)currentFinalDestination;
@@ -253,6 +253,16 @@ static void L16Log(NSString *fmt, ...) {
 
 static NSUInteger gL16Gen = 0;
 
+// Bug A fix (confirmed by trace): when entering an app (env mode 3) the system keeps
+// the dock "visible" (to=1) and then slides it away over ~0.75s while the app is
+// already on screen -> visible flash. Hide the dock window for that transition and
+// show it again once the slide-away has finished. Disable with flag "nohidedock".
+static BOOL gL16Hidden = NO;
+
+static void L16RestoreDock(UIWindow *w) {
+    if (gL16Hidden && w) { w.alpha = 1.0; gL16Hidden = NO; }
+}
+
 %hook SBFloatingDockRootViewController
 - (void)prepareForTransitionToEnvironmentMode:(long long)mode
                               fromDockVisible:(BOOL)from
@@ -260,35 +270,35 @@ static NSUInteger gL16Gen = 0;
     %orig;
     L16Log(@"DOCK prepareTransition mode=%lld from=%d to=%d", mode, from, to);
     gL16Gen++;
-    if (L16Flag(@"hidedock")) {
+    if (mode == 3 && !L16Flag(@"nohidedock")) {
         UIWindow *w = [[self view] window];
-        if (w) w.alpha = to ? 1.0 : 0.0;
+        if (w) {
+            w.alpha = 0.0; gL16Hidden = YES;
+            NSUInteger g = gL16Gen;
+            __weak UIWindow *ww = w;
+            // safety net: never leave the dock hidden
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ if (g == gL16Gen) L16RestoreDock(ww); });
+        }
     }
 }
 - (void)cleanupAfterTransitionToEnvironmentMode:(long long)mode {
     %orig;
     L16Log(@"DOCK cleanupTransition mode=%lld", mode);
-    if (L16Flag(@"hidedock")) {
-        NSUInteger g = gL16Gen;
-        __weak UIWindow *w = [[self view] window];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (g == gL16Gen && w) w.alpha = 1.0;
-        });
-    }
 }
 - (void)_setPresentedProgress:(double)progress animated:(BOOL)animated
                   interactive:(BOOL)interactive completion:(id)completion {
     L16Log(@"DOCK setPresentedProgress %.2f anim=%d inter=%d", progress, animated, interactive);
-    if (progress > 0.01 && L16Flag(@"hidedock")) {
-        gL16Gen++;
-        UIWindow *w = [[self view] window];
-        if (w) w.alpha = 1.0;
-    }
+    if (progress > 0.01) { gL16Gen++; L16RestoreDock([[self view] window]); }
     %orig;
 }
 - (void)_beginPresentationTransition { L16Log(@"DOCK beginPresentationTransition"); %orig; }
-- (void)_endPresentationTransition   { L16Log(@"DOCK endPresentationTransition");   %orig; }
+- (void)_endPresentationTransition {
+    L16Log(@"DOCK endPresentationTransition");
+    %orig;
+    // slide-away finished -> dock is off screen, safe to show the window again
+    L16RestoreDock([[self view] window]);
+}
 %end
 
 %hook SBFloatingDockController
