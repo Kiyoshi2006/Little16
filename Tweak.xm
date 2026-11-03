@@ -10,6 +10,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 // ─── private interfaces ──────────────────────────────────────────────────────
 
@@ -36,6 +37,13 @@
 
 @interface NSObject (L16Private)
 - (BOOL)isHandoff;
+@end
+
+@interface SBFloatingDockRootViewController : UIViewController
+@end
+
+@interface SBFloatingDockController : NSObject
+- (BOOL)isFloatingDockPresented;
 @end
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -193,6 +201,90 @@ layoutStateTransitionCoordinator:(id)c
 %end
 
 
+
+// ─── EXPERIMENTAL FIXES (v1.0.2) ─────────────────────────────────────────────
+// Bug A: dock flashes ~0.3s when re-entering an app (esp. landscape).
+//   Hypothesis: dock window is still presented while home -> app transition runs.
+//   Fix: hide the dock window while transitioning to an app (toDockVisible == NO),
+//   show it again shortly after the transition ends or as soon as the user pulls
+//   the dock up.
+// Bug B: swiping home from landscape: card shrinks to a wrong place, then ~1s later
+//   jumps to the dock. Hypothesis: the zoom animation resolves the app's icon inside
+//   the (rotated / not presented) floating dock. Fix: in landscape, while the dock is
+//   not presented, pretend the dock displays no icons so the home-screen icon is used.
+
+static BOOL L16Landscape(void) {
+    UIApplication *app = [UIApplication sharedApplication];
+    long long o = 0;
+    if ([app respondsToSelector:@selector(activeInterfaceOrientation)])
+        o = ((long long (*)(id, SEL))objc_msgSend)(app, @selector(activeInterfaceOrientation));
+    else
+        o = (long long)[app statusBarOrientation];
+    return o == 3 || o == 4;
+}
+
+static NSUInteger gL16Gen = 0;
+
+%hook SBFloatingDockRootViewController
+- (void)prepareForTransitionToEnvironmentMode:(long long)mode
+                              fromDockVisible:(BOOL)from
+                                toDockVisible:(BOOL)to {
+    %orig;
+    gL16Gen++;
+    UIWindow *w = [[self view] window];
+    if (w) w.alpha = to ? 1.0 : 0.0;
+}
+- (void)cleanupAfterTransitionToEnvironmentMode:(long long)mode {
+    %orig;
+    NSUInteger g = gL16Gen;
+    __weak UIWindow *w = [[self view] window];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (g == gL16Gen && w) w.alpha = 1.0;
+    });
+}
+- (void)_setPresentedProgress:(double)progress animated:(BOOL)animated
+                  interactive:(BOOL)interactive completion:(id)completion {
+    if (progress > 0.01) {
+        gL16Gen++;
+        UIWindow *w = [[self view] window];
+        if (w) w.alpha = 1.0;
+    }
+    %orig;
+}
+%end
+
+%hook SBFloatingDockController
+- (BOOL)isDisplayingIcon:(id)icon {
+    if (L16Landscape() && ![self isFloatingDockPresented]) return NO;
+    return %orig;
+}
+- (BOOL)isDisplayingIcon:(id)icon inLocation:(id)loc {
+    if (L16Landscape() && ![self isFloatingDockPresented]) return NO;
+    return %orig;
+}
+- (BOOL)isDisplayingIcon:(id)icon inLocations:(id)locs {
+    if (L16Landscape() && ![self isFloatingDockPresented]) return NO;
+    return %orig;
+}
+- (id)firstIconViewForIcon:(id)icon {
+    if (L16Landscape() && ![self isFloatingDockPresented]) return nil;
+    return %orig;
+}
+- (id)firstIconViewForIcon:(id)icon excludingLocations:(id)locs {
+    if (L16Landscape() && ![self isFloatingDockPresented]) return nil;
+    return %orig;
+}
+- (id)firstIconViewForIcon:(id)icon inLocations:(id)locs {
+    if (L16Landscape() && ![self isFloatingDockPresented]) return nil;
+    return %orig;
+}
+- (id)iconViewForIcon:(id)icon location:(id)loc {
+    if (L16Landscape() && ![self isFloatingDockPresented]) return nil;
+    return %orig;
+}
+%end
+
 // ─── Diagnostics: dump method lists of dock/switcher classes to a file ───────
 // Output: /var/mobile/Library/Little16-dump.txt (written once, ~20s after respring)
 
@@ -227,6 +319,7 @@ static void L16Dump(void) {
         }
     }
     free(list);
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/Library/Little16-dump.txt"]) return;
     [out writeToFile:@"/var/mobile/Library/Little16-dump.txt" atomically:YES
             encoding:NSUTF8StringEncoding error:nil];
 }
