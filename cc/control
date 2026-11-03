@@ -1,0 +1,9 @@
+Package: com.kiyoshi.little16cc
+Name: Little16 CC Fix
+Author: Kiyoshi2006
+Maintainer: Kiyoshi2006
+Description: Companion for Little16: lets you swipe up from the bottom edge to close Control Center.
+Depends: mobilesubstrate
+Section: Tweaks
+Architecture: iphoneos-arm64
+Version: 1.0.0

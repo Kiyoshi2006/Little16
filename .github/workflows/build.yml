@@ -51,13 +51,26 @@ jobs:
           mkdir -p "$THEOS/sdks"
           mv sdks-tmp/iPhoneOS16.5.sdk "$THEOS/sdks/"
 
-      - name: Build package (rootless)
+      - name: Build main package (rootless)
         env:
           THEOS_PACKAGE_SCHEME: rootless
         run: |
           make package FINALPACKAGE=1
 
-      - name: Upload .deb artifact
+      - name: Build CC-fix companion package (rootless)
+        env:
+          THEOS_PACKAGE_SCHEME: rootless
+        run: |
+          make -C cc package FINALPACKAGE=1
+
+      - name: Upload CC-fix .deb (use this with the original Little16)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Little16CC-deb
+          path: cc/packages/*.deb
+          retention-days: 30
+
+      - name: Upload full reconstruction .deb
         uses: actions/upload-artifact@v4
         with:
           name: Little16-deb
@@ -68,5 +81,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: packages/*.deb
+          files: |
+            packages/*.deb
+            cc/packages/*.deb
           generate_release_notes: true
