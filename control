@@ -6,4 +6,4 @@ Description: iPhone X gestures for iOS 16 — home indicator, swipe-to-home, flo
 Depends: mobilesubstrate
 Section: Tweaks
 Architecture: iphoneos-arm64
-Version: 1.0.5
+Version: 1.0.6

@@ -207,6 +207,7 @@ layoutStateTransitionCoordinator:(id)c
 // Switch file: /var/mobile/Library/Little16-flags.txt   (plain text, words below;
 //              re-read every ~1s, no respring needed)
 //   nodelay  -> zero the zoom delays of SBCenterAppIconZoomAnimator
+//   nocc -> turn OFF the control-center bottom-edge fix
 //   nodipfix / noiconfilter -> turn OFF the dock-dip fix / the landscape icon-target fix
 //   nohidedock -> turn OFF the dock flash fix (hide dock window while entering an app)
 
@@ -440,19 +441,83 @@ static BOOL L16SkipDockIcons(void) {
 }
 %end
 
+// ─── Control Center: bottom-edge swipe-up dead zone (v1.0.6) ─────────────────
+// With the home gesture enabled on a home-button iPhone, the bottom ~0.5cm edge belongs
+// to the home-gesture recognizer. While Control Center is open that recognizer swallows
+// the touch and does nothing, so the strip cannot dismiss Control Center.
+// Fix: while Control Center is visible, the home-gesture recognizer refuses to begin and
+// dismisses Control Center itself. Disable with flag "nocc".
+
+static BOOL L16CCWindowCheck(UIWindow *w, NSMutableString *dbg) {
+    NSString *cn = NSStringFromClass([w class]);
+    NSString *rn = NSStringFromClass([[w rootViewController] class]);
+    BOOL isCC = [cn containsString:@"ControlCenter"] || [rn containsString:@"ControlCenter"] || [rn containsString:@"CCUI"];
+    if (dbg) [dbg appendFormat:@"[%@ rvc=%@ hidden=%d alpha=%.2f] ", cn, rn, w.hidden, w.alpha];
+    if (!isCC) return NO;
+    return !w.hidden && w.alpha > 0.01;
+}
+
+static BOOL L16CCVisible(void) {
+    NSMutableString *dbg = [NSMutableString string];
+    BOOL vis = NO;
+    NSMutableSet *seen = [NSMutableSet set];
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in [(UIWindowScene *)sc windows]) {
+            if ([seen containsObject:@((uintptr_t)(__bridge void *)w)]) continue;
+            [seen addObject:@((uintptr_t)(__bridge void *)w)];
+            if (L16CCWindowCheck(w, dbg)) vis = YES;
+        }
+    }
+    L16Log(@"CC visible=%d windows: %@", vis, dbg);
+    return vis;
+}
+
+static void L16DismissCC(void) {
+    Class c = NSClassFromString(@"SBControlCenterController");
+    id ctl = nil;
+    if ([c respondsToSelector:@selector(sharedInstance)]) ctl = ((id (*)(id, SEL))objc_msgSend)(c, @selector(sharedInstance));
+    if (!ctl) { L16Log(@"CC dismiss: no controller"); return; }
+    SEL cands[] = { @selector(dismissAnimated:), @selector(_dismissAnimated:) };
+    for (int i = 0; i < 2; i++) {
+        if ([ctl respondsToSelector:cands[i]]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(ctl, cands[i], YES);
+            L16Log(@"CC dismiss via %s", sel_getName(cands[i]));
+            return;
+        }
+    }
+    SEL c2 = @selector(dismissAnimated:completion:);
+    if ([ctl respondsToSelector:c2]) {
+        ((void (*)(id, SEL, BOOL, id))objc_msgSend)(ctl, c2, YES, nil);
+        L16Log(@"CC dismiss via dismissAnimated:completion:");
+        return;
+    }
+    L16Log(@"CC dismiss: no known selector on %@", NSStringFromClass([ctl class]));
+}
+
+%hook SBHomeGesturePanGestureRecognizer
+- (BOOL)_shouldBegin {
+    BOOL r = %orig;
+    if (r && !L16Flag(@"nocc") && L16CCVisible()) {
+        L16Log(@"HOMEGESTURE blocked: control center visible -> dismissing it");
+        L16DismissCC();
+        return NO;
+    }
+    return r;
+}
+%end
+
 // ─── Diagnostics: dump method lists of dock/switcher classes to a file ───────
-// Output: /var/mobile/Library/Little16-dump.txt (written once, ~20s after respring)
+// Output: /var/mobile/Library/Little16-dump2.txt (written once, ~20s after respring)
 
 static void L16Dump(void) {
-    NSArray *keys = @[@"FloatingDock", @"HomeGesture", @"HomeGrabber", @"FluidSwitcher",
-                      @"ZoomAnim", @"AppToHome", @"HomeScreenOpenFolder", @"DockIconListView",
-                      @"SBMainSwitcher", @"SBSwitcherAppSuggestion", @"SBDeviceApplicationSceneView"];
+    NSArray *keys = @[@"ControlCenter", @"CCUI", @"SystemGesture", @"ScreenEdge", @"GestureRecognizer", @"CoverSheetPresent"];
     NSMutableString *out = [NSMutableString string];
     unsigned int n = 0;
     Class *list = objc_copyClassList(&n);
     for (unsigned int i = 0; i < n; i++) {
         const char *cn = class_getName(list[i]);
-        if (!cn || strncmp(cn, "SB", 2) != 0) continue;
+        if (!cn || (strncmp(cn, "SB", 2) != 0 && strncmp(cn, "CCUI", 4) != 0 && strncmp(cn, "CSCover", 7) != 0)) continue;
         NSString *name = [NSString stringWithUTF8String:cn];
         BOOL match = NO;
         for (NSString *k in keys) if ([name containsString:k]) { match = YES; break; }
@@ -474,8 +539,8 @@ static void L16Dump(void) {
         }
     }
     free(list);
-    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/Library/Little16-dump.txt"]) return;
-    [out writeToFile:@"/var/mobile/Library/Little16-dump.txt" atomically:YES
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/Library/Little16-dump2.txt"]) return;
+    [out writeToFile:@"/var/mobile/Library/Little16-dump2.txt" atomically:YES
             encoding:NSUTF8StringEncoding error:nil];
 }
 
