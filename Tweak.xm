@@ -207,6 +207,7 @@ layoutStateTransitionCoordinator:(id)c
 // Switch file: /var/mobile/Library/Little16-flags.txt   (plain text, words below;
 //              re-read every ~1s, no respring needed)
 //   nodelay  -> zero the zoom delays of SBCenterAppIconZoomAnimator
+//   nodipfix / noiconfilter -> turn OFF the dock-dip fix / the landscape icon-target fix
 //   nohidedock -> turn OFF the dock flash fix (hide dock window while entering an app)
 
 @interface SBHomeGestureFinalDestinationSwitcherModifier : NSObject
@@ -252,6 +253,10 @@ static void L16Log(NSString *fmt, ...) {
 }
 
 static NSUInteger gL16Gen = 0;
+static CFTimeInterval gL16StayEnd = 0;      // last gesture end that kept the app (dest 0)
+static CFTimeInterval gL16PresentSeen = 0;  // last _presentFloatingDockIfDismissed call
+static int gL16SwitcherLookup = 0;          // >0 while the switcher resolves an icon target
+
 
 // Bug A fix (confirmed by trace): when entering an app (env mode 3) the system keeps
 // the dock "visible" (to=1) and then slides it away over ~0.75s while the app is
@@ -290,6 +295,22 @@ static void L16RestoreDock(UIWindow *w) {
                   interactive:(BOOL)interactive completion:(id)completion {
     L16Log(@"DOCK setPresentedProgress %.2f anim=%d inter=%d", progress, animated, interactive);
     if (progress > 0.01) { gL16Gen++; L16RestoreDock([[self view] window]); }
+    // Bug C fix: after a pull-up that ends with "stay in app", the system first slides the
+    // dock to 0 and ~15ms later presents it again -> visible dip/flash. Hold it at 1.0
+    // instead; if nobody re-presents it within 0.3s, do the dismissal we swallowed.
+    CFTimeInterval now = CACurrentMediaTime();
+    if (progress < 0.01 && !interactive && (now - gL16StayEnd) < 0.15 && !L16Flag(@"nodipfix")) {
+        L16Log(@"DOCK dipfix: hold at 1.0 instead of dismissing");
+        %orig(1.0, animated, interactive, completion);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (gL16PresentSeen < now) {
+                L16Log(@"DOCK dipfix: no present arrived, dismissing");
+                %orig(0.0, animated, interactive, nil);
+            }
+        });
+        return;
+    }
     %orig;
 }
 - (void)_beginPresentationTransition { L16Log(@"DOCK beginPresentationTransition"); %orig; }
@@ -312,17 +333,74 @@ static void L16RestoreDock(UIWindow *w) {
     %orig;
 }
 - (void)_presentFloatingDockIfDismissedAnimated:(BOOL)a completionHandler:(id)h {
-    L16Log(@"DOCK present animated=%d", a); %orig;
+    L16Log(@"DOCK present animated=%d", a);
+    gL16PresentSeen = CACurrentMediaTime();
+    %orig;
 }
 - (void)_dismissFloatingDockIfPresentedAnimated:(BOOL)a completionHandler:(id)h {
     L16Log(@"DOCK dismiss animated=%d", a); %orig;
 }
 %end
 
+// Bug B fix: swiping home from a landscape app. The switcher resolves the zoom-target
+// icon through the floating dock, whose window is rotated with the app, so the target
+// frame is in the wrong coordinate space (icon stops mid-screen, jumps ~1s later).
+// While the switcher is resolving an icon target in landscape, make the floating dock
+// report no icons so the home-screen icon view is used. Disable with flag "noiconfilter".
+
+@interface SBFluidSwitcherViewController : UIViewController
+@end
+
+static BOOL L16SkipDockIcons(void) {
+    return gL16SwitcherLookup > 0 && (L16Orient() == 3 || L16Orient() == 4) && !L16Flag(@"noiconfilter");
+}
+
+%hook SBFluidSwitcherViewController
+- (id)iconViewForAppLayout:(id)layout {
+    gL16SwitcherLookup++;
+    id r = %orig;
+    gL16SwitcherLookup--;
+    L16Log(@"SWITCHER iconViewForAppLayout -> %@ window=%@", NSStringFromClass([r class]), NSStringFromClass([[(UIView *)r window] class]));
+    return r;
+}
+- (CGRect)homeScreenIconFrameForAppLayout:(id)layout {
+    gL16SwitcherLookup++;
+    CGRect r = %orig;
+    gL16SwitcherLookup--;
+    static CFTimeInterval last = 0; CFTimeInterval n = CACurrentMediaTime();
+    if (n - last > 0.05) { last = n; L16Log(@"SWITCHER homeScreenIconFrame %@", NSStringFromCGRect(r)); }
+    return r;
+}
+- (CGRect)iconImageFrameForAppLayout:(id)layout {
+    gL16SwitcherLookup++;
+    CGRect r = %orig;
+    gL16SwitcherLookup--;
+    return r;
+}
+- (id)homeScreenIconLocationForAppLayout:(id)layout {
+    gL16SwitcherLookup++;
+    id r = %orig;
+    gL16SwitcherLookup--;
+    L16Log(@"SWITCHER homeScreenIconLocation %@", r);
+    return r;
+}
+%end
+
+%hook SBFloatingDockController
+- (id)firstIconViewForIcon:(id)icon { return L16SkipDockIcons() ? nil : %orig; }
+- (id)firstIconViewForIcon:(id)icon excludingLocations:(id)l { return L16SkipDockIcons() ? nil : %orig; }
+- (id)firstIconViewForIcon:(id)icon inLocations:(id)l { return L16SkipDockIcons() ? nil : %orig; }
+- (id)iconViewForIcon:(id)icon location:(id)l { return L16SkipDockIcons() ? nil : %orig; }
+- (BOOL)isDisplayingIcon:(id)icon { return L16SkipDockIcons() ? NO : %orig; }
+- (BOOL)isDisplayingIcon:(id)icon inLocation:(id)l { return L16SkipDockIcons() ? NO : %orig; }
+- (BOOL)isDisplayingIcon:(id)icon inLocations:(id)l { return L16SkipDockIcons() ? NO : %orig; }
+%end
+
 %hook SBHomeGestureFinalDestinationSwitcherModifier
 - (void)_updateForGestureDidEndWithEvent:(id)e {
     %orig;
     L16Log(@"GESTURE end finalDestination=%lld reason=%@", [self currentFinalDestination], [self finalDestinationReason]);
+    if ([self currentFinalDestination] == 0) gL16StayEnd = CACurrentMediaTime();
 }
 %end
 
