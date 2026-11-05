@@ -6,4 +6,4 @@ Description: Companion for Little16: lets you swipe up from the bottom edge to c
 Depends: mobilesubstrate
 Section: Tweaks
 Architecture: iphoneos-arm64
-Version: 1.0.0
+Version: 1.0.1
